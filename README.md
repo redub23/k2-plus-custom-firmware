@@ -96,6 +96,9 @@ Running `bootstrap --replace`:
 - **Bucket purge**: `BOX_PRIME` purges, snaps and wipes at the waste bin. The
   `PURGE` macro wraps it so HelixScreen's Purge button uses the bucket, and
   `START_PRINT` runs it before the KAMP line.
+- **HelixScreen from the fork**: `bootstrap` installs HelixScreen from
+  [redub23/helixscreen](https://github.com/redub23/helixscreen) releases,
+  built by that repo's "K2 fork release" workflow (Actions tab → Run).
 - **Screen slot selection**: works with the HelixScreen change that routes
   remaps through `BOX_SET_ROUTING` (`MERGE=1` keeps earlier routes).
 

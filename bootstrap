@@ -49,7 +49,7 @@ FLUIDD_REPO = "KennethDoerflein/fluidd"
 FLUIDD_ASSET = "fluidd.zip"
 MAINSAIL_REPO = "mainsail-crew/mainsail"
 MAINSAIL_ASSET = "mainsail.zip"
-HELIX_REPO = "prestonbrown/helixscreen"
+HELIX_REPO = "redub23/helixscreen"  # releases built by its "K2 fork release" workflow
 HELIX_ASSET = "helixscreen-k2.zip"
 HELIX_DIR = ROOT / "helixscreen"
 
