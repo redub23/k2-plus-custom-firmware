@@ -175,6 +175,64 @@ class CommandRegistration(unittest.TestCase):
             self.assertEqual(self.handlers[name].__name__, "guarded", name)
 
 
+class SelfAttributes(unittest.TestCase):
+    """Every self.<attr> a class reads must be assigned or defined somewhere
+    in it or its in-repo bases. Mixins are checked against their host
+    classes elsewhere; classes with Klipper bases are skipped."""
+
+    def test_attributes_read_are_defined(self):
+        trees = {p.name: ast.parse(p.read_text()) for p in EXTRAS.glob("*.py")}
+        classes = {}
+        for tree in trees.values():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    classes[node.name] = node
+
+        def members(name, seen):
+            if name in seen:
+                return set(), False
+            seen.add(name)
+            if name not in classes:
+                return set(), True
+            node, out, external = classes[name], set(), False
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    out.add(sub.name)
+                elif (isinstance(sub, ast.Attribute) and chain(sub.value) == "self"
+                      and isinstance(sub.ctx, ast.Store)):
+                    out.add(sub.attr)
+                elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                      and sub.func.id == "setattr"):
+                    external = True
+            for stmt in node.body:
+                if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                    out.update(t.id for t in targets if isinstance(t, ast.Name))
+            for base in node.bases:
+                base_name = getattr(base, "id", getattr(base, "attr", None))
+                if base_name in (None, "object"):
+                    continue
+                sub_members, sub_external = members(base_name, seen)
+                out |= sub_members
+                external |= sub_external
+            return out, external
+
+        problems = []
+        for name, node in classes.items():
+            if name.endswith("Mixin"):
+                continue
+            defined, external = members(name, set())
+            if external:
+                continue
+            read = {sub.attr for sub in ast.walk(node)
+                    if isinstance(sub, ast.Attribute) and chain(sub.value) == "self"
+                    and isinstance(sub.ctx, ast.Load)}
+            missing = sorted(a for a in read - defined if not a.startswith("__"))
+            if missing:
+                problems.append("%s: %s" % (name, ", ".join(missing)))
+        self.assertEqual(problems, [])
+
+
 class CutOffset(unittest.TestCase):
     """BOX_CUT_OFFSET stores a clamped trim and the cut uses it."""
 

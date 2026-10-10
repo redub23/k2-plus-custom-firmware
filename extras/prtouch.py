@@ -78,6 +78,7 @@ class PRTouchEndstopWrapper:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
+        self.ppins = self.printer.lookup_object('pins')
         # Default z_offset in memory, not in the shipped include, so
         # SAVE_CONFIG can save it without an include conflict. Runs before
         # PrinterProbe, which requires the option.
