@@ -62,6 +62,13 @@ OUTPUT_PIN_OPTIONS = (
 )
 
 
+# Defined before the config model: its dataclass default reads ALL_AXES when
+# the class body runs, at import time.
+KINEMATIC_AXES = ("x", "y", "z", "z1")
+EXTRUDER_AXIS = "e"
+ALL_AXES = KINEMATIC_AXES + (EXTRUDER_AXIS,)
+
+
 @dataclass(frozen=True)
 class MotorPinConfig:
     raw: str
@@ -1743,9 +1750,6 @@ class Serial485TransportAdapter:
 
 
 
-KINEMATIC_AXES = ("x", "y", "z", "z1")
-EXTRUDER_AXIS = "e"
-ALL_AXES = KINEMATIC_AXES + (EXTRUDER_AXIS,)
 EXTRUDER_AXES = (EXTRUDER_AXIS,)
 AXIS_NUM_MAP = {
     1: "x",

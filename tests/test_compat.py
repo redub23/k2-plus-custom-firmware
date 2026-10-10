@@ -272,6 +272,17 @@ class ReleaseFiles(unittest.TestCase):
         for path in sorted(EXTRAS.glob("*.py")):
             compile(path.read_text(), str(path), "exec")
 
+    def test_standalone_modules_import(self):
+        """Compiling is not enough: module-level code (dataclass defaults,
+        constants) runs on import, and a NameError there halts Klipper."""
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        import importlib
+        for name in ("motor_control", "box", "box_change", "box_cut_offset",
+                     "box_routing", "box_dryer", "box_protocol", "serial_485",
+                     "motion_limits"):
+            importlib.import_module("extras." + name)
+
     def test_release_index_is_current(self):
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "release_index.py"),
