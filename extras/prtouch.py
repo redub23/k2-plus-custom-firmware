@@ -7,6 +7,7 @@ from statistics import median
 from types import SimpleNamespace
 
 from . import probe
+from .prtouch_flow import PRTouchFlowMixin
 
 _POST_HOME_LIFT = 3.0
 
@@ -72,7 +73,7 @@ class _PRTouchPrinterProbe(probe.PrinterProbe):
         return epos[:3], is_good
 
 
-class PRTouchEndstopWrapper:
+class PRTouchEndstopWrapper(PRTouchFlowMixin):
     def __init__(self, config):
         self.config = config
         self.printer = config.get_printer()
@@ -251,6 +252,7 @@ class PRTouchEndstopWrapper:
         self.gcode.register_command(
             'PRTOUCH_SCRUB', self.cmd_PRTOUCH_SCRUB,
             desc=self.cmd_PRTOUCH_SCRUB_help)
+        self._register_flow_commands()
 
         if not self.register_as_probe:
             # Alternate chip so carto (or another probe) can own "probe".

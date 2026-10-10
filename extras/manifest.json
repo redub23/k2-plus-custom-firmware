@@ -89,8 +89,12 @@
       "size": 74780
     },
     "prtouch.py": {
-      "sha256": "74317012e63362c6067377a5ddf146e9c7ead78545a20ffd0e6ac8f9010a10e4",
-      "size": 47504
+      "sha256": "2abf032f08654c74acf097c43e49daf9fa18df12703b87a09fa73cc33a1efe13",
+      "size": 47604
+    },
+    "prtouch_flow.py": {
+      "sha256": "fc4879f1cdf51f1fa185ddd644f6f6ff096250cd28393da571416e61cdffc93b",
+      "size": 11663
     },
     "ptc_power_limiter.py": {
       "sha256": "0fb1cf65edb1af2d85d4cddf7c08fe3a18562051bc438ba7afcd7018b57555ff",
