@@ -869,17 +869,27 @@ def ensure_companion_includes() -> None:
     moonraker_conf = CONFIG_DIR / "moonraker.conf"
     if not moonraker_conf.is_file():
         return
-    text = moonraker_conf.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    added = []
-    for path in (MOBILERAKER_UPDATE_CONF, MOONRAKER_OVERRIDES_CONF):
-        directive = f"[include {path.name}]"
-        if path.is_file() and directive not in lines:
-            added.append(directive)
-    if not added:
-        return
-    moonraker_conf.write_text(
-        text.rstrip("\n") + "\n\n" + "\n".join(added) + "\n", encoding="utf-8")
+    original = moonraker_conf.read_text(encoding="utf-8")
+    managed = {f"[include {path.name}]": path
+               for path in (MOBILERAKER_UPDATE_CONF, MOONRAKER_OVERRIDES_CONF)}
+    # Moonraker rejects a file included twice ("Recursive include directive
+    # detected"), so keep only the first copy of each managed include.
+    kept, seen = [], set()
+    for line in original.splitlines():
+        key = line.strip()
+        if key in managed:
+            if key in seen:
+                log(f"removed duplicate {key} from {moonraker_conf}")
+                continue
+            seen.add(key)
+            line = key
+        kept.append(line)
+    added = [d for d, path in managed.items() if path.is_file() and d not in seen]
+    text = "\n".join(kept).rstrip("\n") + "\n"
+    if added:
+        text += "\n" + "\n".join(added) + "\n"
+    if text != original:
+        moonraker_conf.write_text(text, encoding="utf-8")
     for directive in added:
         log(f"added {directive} to {moonraker_conf}")
 
