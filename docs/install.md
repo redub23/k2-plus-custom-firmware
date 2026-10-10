@@ -5,7 +5,7 @@ Unload any filament from the printhead before starting.
 SSH into the printer and run:
 
 ```sh
-python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/KennethDoerflein/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})"
+python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/redub23/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})"
 ```
 
 Power cycle the printer when instructed.

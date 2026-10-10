@@ -22,9 +22,11 @@ from extras.box_gcode import read_metadata
 from extras.box_catalog import resolve_material
 from extras.motion_limits import restore_motion_limits, save_motion_limits
 try:
+    from extras.box_cut_offset import BoxCutOffsetMixin
     from extras.box_dryer import BoxDryerMixin
     from extras.box_routing import BoxRoutingMixin
 except ImportError:
+    from box_cut_offset import BoxCutOffsetMixin
     from box_dryer import BoxDryerMixin
     from box_routing import BoxRoutingMixin
 
@@ -429,7 +431,7 @@ class BoxStore:
             self.save()
 
 
-class Box(BoxRoutingMixin, BoxDryerMixin):
+class Box(BoxRoutingMixin, BoxDryerMixin, BoxCutOffsetMixin):
     CONSOLE_PREFIX = "[BOX]: "
 
     def __init__(self, config):
@@ -574,6 +576,8 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             ("BOX_CUT", self.cmd_cut, "Cut the active filament"),
             ("NOZZLE_CLEAN", self.cmd_nozzle_clean, "Clean the nozzle"),
             ("BOX_GO_TO_WASTEBIN", self.cmd_wastebin, "Move to the wastebin"),
+            ("BOX_PRIME", self.cmd_prime,
+             "Purge, snap and wipe at the wastebin (LENGTH=mm, TEMP=C)"),
             ("PARSE_FLUSH_VOLUMES", self.change_engine.parse_flush_volumes,
              "Parse slicer flush metadata"),
             ("BOX_RUNOUT_CHECK", self.cmd_runout,
@@ -604,7 +608,8 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             ("BOX_SYNC_LANES", self.cmd_sync_lanes,
              "Synchronize filament lanes with Moonraker"),
         )
-        commands += self._routing_commands() + self._dryer_commands()
+        commands += (self._routing_commands() + self._dryer_commands()
+                     + self._cut_offset_commands())
         for name, handler, description in commands:
             if name in SAFE_WIDGET_COMMANDS:
                 handler = self._guard_widget_command(name, handler)
@@ -787,6 +792,7 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             "loaded_mask": snap.loaded_mask,
             "slot_filament_mask": snap.slot_mask,
             "tool_routing": self._routing_status(),
+            "cutter": self._cut_offset_status(),
             "slots": slots,
             "materials": self.store.materials,
             "runout": self._runout_status(physical, snap),
@@ -1307,6 +1313,11 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
 
     def cmd_nozzle_clean(self, gcmd):
         self.nozzle_clean()
+
+    def cmd_prime(self, gcmd):
+        self.change_engine.prime_at_wastebin(
+            gcmd, gcmd.get_float("LENGTH", None, minval=0.0, maxval=500.0),
+            gcmd.get_int("TEMP", None, minval=170, maxval=350))
 
     def cmd_wastebin(self, gcmd):
         self.move_to_wastebin()
@@ -2240,6 +2251,7 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             return
         if self.cut_x is None:
             raise BoxError("cut_pos_x is not defined in [box]")
+        cut_x = self.effective_cut_x()
 
         toolhead = self.printer.lookup_object("toolhead")
         rail = toolhead.kin.rails[0]
@@ -2254,7 +2266,7 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             limits_saved = True
             lifted_z = self._lift_for_cut(toolhead)
             self.gcode.run_script_from_command("HOME_IF_NEEDED AXIS=XY")
-            self._set_cut_x_limit(toolhead, min(old_position_min, self.cut_x - 5.0))
+            self._set_cut_x_limit(toolhead, min(old_position_min, cut_x - 5.0))
             self.gcode.run_script_from_command("G90")
             self.gcode.run_script_from_command(
                 "SET_VELOCITY_LIMIT VELOCITY=%d ACCEL=%d "
@@ -2272,7 +2284,7 @@ class Box(BoxRoutingMixin, BoxDryerMixin):
             for attempt in range(3):
                 if attempt:
                     self._info(self.gcode, "Cut retry %d/3" % (attempt + 1))
-                self._service_move(x=self.cut_x, velocity=self.cut_velocity)
+                self._service_move(x=cut_x, velocity=self.cut_velocity)
                 toolhead.wait_moves()
                 self._service_move(
                     x=self.pre_cut_x, velocity=self.travel_velocity)

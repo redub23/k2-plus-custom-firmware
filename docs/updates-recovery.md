@@ -20,7 +20,7 @@ bootstrap --update extras
 bootstrap --update configs
 ```
 
-This installs the latest [K2 configuration](https://github.com/KennethDoerflein/kalico/tree/main/config/k2)
+This installs the latest [K2 configuration](https://github.com/redub23/kalico/tree/main/config/k2)
 and keeps your `SAVE_CONFIG` block, `overrides.cfg`, files you added and your
 probe mode. A copy of the previous configuration is left in
 `printer_data/config/config_backups/`.
@@ -33,7 +33,7 @@ bootstrap --replace configs
 
 This moves your configuration to `printer_data/config/config_backups/` and
 installs a fresh copy of the
-[K2 configuration](https://github.com/KennethDoerflein/kalico/tree/main/config/k2).
+[K2 configuration](https://github.com/redub23/kalico/tree/main/config/k2).
 
 ## Replace a component
 
@@ -117,5 +117,5 @@ firmware and its files are not touched.
 To skip the menu, add `--fresh` to the end of the install command:
 
 ```sh
-python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/KennethDoerflein/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})" --fresh
+python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/redub23/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})" --fresh
 ```

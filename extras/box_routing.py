@@ -23,7 +23,8 @@ class BoxRoutingMixin:
     def _routing_commands(self):
         return (
             ("BOX_SET_ROUTING", self.cmd_set_routing,
-             "Set slicer-tool-to-physical-slot routing (e.g. BOX_SET_ROUTING T0=2 T1=0)"),
+             "Set slicer-tool-to-physical-slot routing (e.g. BOX_SET_ROUTING T0=2 T1=0; "
+             "MERGE=1 keeps routes not named)"),
             ("BOX_CLEAR_ROUTING", self.cmd_clear_routing,
              "Reset tool routing to 1:1 default"),
         )
@@ -48,9 +49,11 @@ class BoxRoutingMixin:
 
         Maps slicer tool numbers to physical CFS slots at runtime without
         modifying G-code files. Persists until print ends or BOX_CLEAR_ROUTING
-        is called.
+        is called. MERGE=1 updates only the named tools, so a screen can send
+        one remap per tool without each command erasing the previous ones.
         """
         params = gcmd.get_command_parameters()
+        merge = bool(gcmd.get_int("MERGE", 0, minval=0, maxval=1))
         new_routing = {}
         for key, val in params.items():
             if not key.startswith("T"):
@@ -89,6 +92,10 @@ class BoxRoutingMixin:
                 "[BOX]: BOX_SET_ROUTING requires at least one "
                 "T<n>=<slot> parameter")
 
+        if merge:
+            merged = dict(self.tool_routing)
+            merged.update(new_routing)
+            new_routing = merged
         self.tool_routing = new_routing
         mapping_str = " ".join("T%d->Slot%d" % (k, v)
                                for k, v in sorted(new_routing.items()))

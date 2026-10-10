@@ -90,6 +90,8 @@ class BoxChangeEngine:
             "print_prime_length", 20.0, minval=0.0)
         self.fallback_purge_length = config.getfloat(
             "fallback_purge_length", 100.0, minval=0.0)
+        self.start_purge_length = config.getfloat(
+            "start_purge_length", 30.0, minval=0.0)
         self.default_temp = config.getint("default_temp", 220, minval=170, maxval=350)
         self.toolchange_z_hop = config.getfloat(
             "toolchange_z_hop", 2.0, minval=0.0)
@@ -188,6 +190,66 @@ class BoxChangeEngine:
         # The head is over the print, so only wait to heat; cooling can run on.
         self._start_heat(temperature)
         self._wait_for_heat(gcmd, temperature, fault_generation)
+
+    def prime_at_wastebin(self, gcmd, length=None, temperature=None):
+        """BOX_PRIME: purge, cool, snap and wipe at the wastebin.
+
+        The same choreography a filament change uses after loading, run on
+        demand. START_PRINT calls it once the nozzle is at print temperature,
+        in place of a purge line on the bed.
+        """
+        if self.box.operation_depth:
+            raise gcmd.error("[BOX]: Wait for the current Box operation to finish")
+        length = self.start_purge_length if length is None else float(length)
+        if length <= 0.0:
+            return False
+        detected, sensor_error = self.box.get_filament_sensor_state()
+        if sensor_error is None and not detected:
+            raise gcmd.error("[BOX]: BOX_PRIME needs filament at the toolhead")
+        heater = self.printer.lookup_object("heaters").lookup_heater("extruder")
+        reactor = self.printer.get_reactor()
+        if temperature is None:
+            _current, target = heater.get_temp(reactor.monotonic())
+            temperature = int(round(target))
+            if temperature < 170:
+                # Cold nozzle (a screen Purge press): heat for what is loaded.
+                hotend = self.box.hotend_filament()
+                if hotend and hotend["temperature"] is not None:
+                    temperature = hotend["temperature"]
+                elif hotend and hotend["slot"] is not None:
+                    temperature = self._effective_temp(hotend["slot"])
+                else:
+                    temperature = self.default_temp
+        temperature = int(round(float(temperature)))
+        if not 170 <= temperature <= 350:
+            raise gcmd.error(
+                "[BOX]: BOX_PRIME needs a purge temperature of 170-350C")
+        fault_generation = self.box.fault_generation
+        try:
+            self.box.move_to_wastebin()
+            self._check_abort(fault_generation)
+            self._start_heat(temperature)
+            self._wait_for_heat(gcmd, temperature, fault_generation)
+            purge_f = self.purge_speed / FILAMENT_AREA * 60.0
+            with self.box.part_fan_override(0.0):
+                self.gcode.run_script_from_command(
+                    "SAVE_GCODE_STATE NAME=box_prime")
+                try:
+                    self.gcode.run_script_from_command("M83")
+                    self._info(gcmd, "Purging %.1fmm at the wastebin" % length)
+                    self._purge_moves(
+                        length, purge_f, self.box.clog_event_count,
+                        fault_generation)
+                finally:
+                    self.gcode.run_script_from_command(
+                        "RESTORE_GCODE_STATE NAME=box_prime MOVE=0")
+            # The final snap retracts the tip; push it back so the first
+            # extrusion of the print starts with a full nozzle.
+            self._relative_extrude(
+                "box_prime_repush", SNAP_RETRACT_MM, self.box.retract_velocity)
+        except RuntimeError as exc:
+            raise gcmd.error("[BOX]: BOX_PRIME failed: %s" % exc)
+        return True
 
     def prime_for_power_loss_recovery(self, gcmd, target, temperature):
         final = int(round(float(temperature)))

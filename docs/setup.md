@@ -28,12 +28,16 @@ Open **Printer Settings → Machine G-code** and use the following fields.
 ### Start G-code
 
 ```gcode
-START_PRINT EXTRUDER_TEMP=[nozzle_temperature_initial_layer] BED_TEMP=[bed_temperature_initial_layer_single] MATERIAL={filament_type[initial_tool]} CHAMBER_TEMP=[overall_chamber_temperature] MIN_CHAMBER_TEMP=[chamber_minimal_temperature]
+START_PRINT EXTRUDER_TEMP=[nozzle_temperature_initial_layer] BED_TEMP=[bed_temperature_initial_layer_single] MATERIAL={filament_type[initial_tool]} CHAMBER_TEMP=[overall_chamber_temperature] MIN_CHAMBER_TEMP=[chamber_minimal_temperature] INITIAL_TOOL=[initial_no_support_extruder]
 T[initial_no_support_extruder]
-;LINE_PURGE
+LINE_PURGE
 ```
 
-Remove the semicolon from `;LINE_PURGE` to enable the KAMP purge line.
+`START_PRINT` ends with a purge, snap and wipe at the waste bin (length:
+`start_purge_length`); `LINE_PURGE` then lays the KAMP line next to the print.
+Drop the `LINE_PURGE` line if the bucket purge is enough, or set
+`variable_wastebin_prime: 0` under `[gcode_macro _START_PRINT_VARS]` in
+`overrides.cfg` to skip the bucket purge.
 
 ### Before Layer Change G-code
 

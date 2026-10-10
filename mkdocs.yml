@@ -38,6 +38,7 @@ nav:
   - OrcaSlicer: setup.md
   - CFS and RFID: cfs.md
   - Error explanation: error-explanation.md
+  - Remote monitoring: remote-monitoring.md
   - Updates & Recovery: updates-recovery.md
   - Reference:
       - Command Reference: command-reference.md

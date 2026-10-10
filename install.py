@@ -36,7 +36,7 @@ HELIX_SHA256 = "ca31738a821a112303469d5ce87043ab54154b9e966ee0f11610a4a43a3b1071
 ROOTFS_URL = f"{BASE_URL}/v{FIRMWARE_VERSION}/rootfs.ext2"
 KERNEL_URL = f"{BASE_URL}/v{FIRMWARE_VERSION}/kernel.img"
 SWAP_URL = f"{BASE_URL}/v{FIRMWARE_VERSION}/swap"
-BOOTSTRAP_URL = "https://raw.githubusercontent.com/KennethDoerflein/k2-plus-custom-firmware/main/bootstrap"
+BOOTSTRAP_URL = "https://raw.githubusercontent.com/redub23/k2-plus-custom-firmware/main/bootstrap"
 
 ROOTFS_A = "/dev/mmcblk0p6"
 ROOTFS_B = "/dev/mmcblk0p7"

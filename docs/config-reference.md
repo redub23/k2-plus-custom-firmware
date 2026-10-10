@@ -36,6 +36,7 @@ hotend_feed_length: 63      # Printhead gears to hotend, mm
 print_prime_speed: 10       # Print-start prime flow rate, mm3/s
 print_prime_length: 20      # Print-start prime filament, mm
 fallback_purge_length: 100  # Purge when no slicer matrix is available, mm
+start_purge_length: 30      # BOX_PRIME purge at the end of START_PRINT, mm
 default_temp: 220           # Fallback nozzle temp when print data is unavailable
 retract_length: 30          # Retract before cutting, mm
 retract_velocity: 3000.0    # Retraction/snap/cut-assist feedrate, mm/min

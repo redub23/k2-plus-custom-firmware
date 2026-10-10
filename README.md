@@ -47,7 +47,7 @@ If you already have Jacob's custom firmware installed, you must swap back to the
 3. SSH into the printer again (it will now be running stock firmware).
 4. Run the installer for this fork:
    ```sh
-   python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/KennethDoerflein/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})"
+   python3 -c "import urllib.request; exec(urllib.request.urlopen('https://raw.githubusercontent.com/redub23/k2-plus-custom-firmware/main/install.py').read(), {'__name__':'__main__'})"
    ```
 5. After the installer completes and reboots into the custom firmware, SSH in and run:
    ```sh
@@ -86,6 +86,19 @@ Running `bootstrap --replace`:
    ```
    Your custom macros, saved bed meshes, and probe offsets will remain safe in this backup directory so you can reference or restore them.
 
+## Added in this fork
+
+- **Mobileraker + OctoApp companions** for remote monitoring from the phone
+  apps, installed by `bootstrap` (or `bootstrap --companions` on an existing
+  install). See [docs/remote-monitoring.md](docs/remote-monitoring.md).
+- **Cutter offset from the screen**: run the `CUTTER_OFFSET` macro (or
+  `BOX_CUT_OFFSET`) for a dialog that nudges the cut position ±0.1/±0.5 mm.
+- **Bucket purge**: `BOX_PRIME` purges, snaps and wipes at the waste bin. The
+  `PURGE` macro wraps it so HelixScreen's Purge button uses the bucket, and
+  `START_PRINT` runs it before the KAMP line.
+- **Screen slot selection**: works with the HelixScreen change that routes
+  remaps through `BOX_SET_ROUTING` (`MERGE=1` keeps earlier routes).
+
 ## Repository Layout
 
 - `kernel.img` and `rootfs.ext2` — firmware images
@@ -97,7 +110,7 @@ Running `bootstrap --replace`:
 
 ## Companion Repositories
 
-- [Kalico (Klipper fork)](https://github.com/KennethDoerflein/kalico)
+- [Kalico (Klipper fork)](https://github.com/redub23/kalico)
 - [Fluidd (Web UI)](https://github.com/KennethDoerflein/fluidd)
 
 This is an independent project and is not affiliated with Creality.

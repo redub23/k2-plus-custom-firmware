@@ -15,6 +15,7 @@ failure unless --replace is passed.
 from typing import List, Dict, Optional, Union, Tuple, Any
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -36,9 +37,9 @@ ROOT = UDISK
 PRINTER_DATA = UDISK / "printer_data"
 CONFIG_DIR = PRINTER_DATA / "config"
 
-KALICO_REPO = "https://github.com/KennethDoerflein/kalico"
+KALICO_REPO = "https://github.com/redub23/kalico"
 KALICO_BRANCH = "main"
-FIRMWARE_REPO = "https://github.com/KennethDoerflein/k2-plus-custom-firmware"
+FIRMWARE_REPO = "https://github.com/redub23/k2-plus-custom-firmware"
 FIRMWARE_BRANCH = "main"
 GITHUB_TOKEN = ""  # For private repos
 MOONRAKER_REPO = "https://github.com/arksine/moonraker"
@@ -53,7 +54,20 @@ HELIX_ASSET = "helixscreen-k2.zip"
 HELIX_DIR = ROOT / "helixscreen"
 
 
-MOONRAKER_ASVC = "klipper_mcu\nhelixscreen\nustreamer@stockcam\n"
+MOONRAKER_ASVC = "klipper_mcu\nhelixscreen\nustreamer@stockcam\nmobileraker\noctoapp\n"
+
+# Remote-monitoring companions for the Mobileraker and OctoApp phone apps.
+MOBILERAKER_REPO = "https://github.com/Clon1998/mobileraker_companion"
+MOBILERAKER_DIR = ROOT / "mobileraker_companion"
+MOBILERAKER_ENV = ROOT / "mobileraker-env"
+MOBILERAKER_CONF = CONFIG_DIR / "mobileraker.conf"
+MOBILERAKER_UPDATE_CONF = CONFIG_DIR / "mobileraker-moonraker.conf"
+OCTOAPP_REPO = "https://github.com/crysxd/OctoApp-Plugin"
+OCTOAPP_DIR = ROOT / "octoapp"
+OCTOAPP_ENV = ROOT / "octoapp-env"
+OCTOAPP_STORE = PRINTER_DATA / "octoapp-store"
+LOGS_DIR = PRINTER_DATA / "logs"
+SYSTEMD_DIR = Path("/etc/systemd/system")
 
 TIMELAPSE_URL = "https://raw.githubusercontent.com/mainsail-crew/moonraker-timelapse/main/component/timelapse.py"
 FIRMWARE_BASE_URL = "https://github.com/KennethDoerflein/k2-plus-custom-firmware/releases/download"
@@ -790,6 +804,160 @@ def install_kalico_extras() -> List[Path]:
 
 
 
+def _write_unit(name: str, description: str, exec_start: str, workdir: Path) -> None:
+    unit = SYSTEMD_DIR / f"{name}.service"
+    unit.write_text(
+        "[Unit]\n"
+        f"Description={description}\n"
+        "After=network-online.target moonraker.service\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={workdir}\n"
+        f"ExecStart={exec_start}\n"
+        "Restart=always\n"
+        "RestartSec=10\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n",
+        encoding="utf-8",
+    )
+    log(f"wrote {unit}")
+
+
+def _companion_pip_install(venv: Path, requirements: Path) -> None:
+    # Unlike Kalico/Moonraker, some companion dependencies only ship as pure
+    # Python sdists, so prefer wheels without forbidding source installs.
+    if not requirements.is_file():
+        raise SystemExit(f"missing requirements file: {requirements}")
+    ensure_pip_executable(venv)
+    env = os.environ.copy()
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    run(
+        [str(venv / "bin" / "pip"), "install", "--prefer-binary", "-r", str(requirements)],
+        env=env,
+        retry_label=f"installing Python packages into {venv}",
+    )
+
+
+def _ensure_asvc(*services: str) -> None:
+    asvc = PRINTER_DATA / "moonraker.asvc"
+    lines = asvc.read_text(encoding="utf-8").splitlines() if asvc.is_file() else []
+    missing = [svc for svc in services if svc not in lines]
+    if missing:
+        asvc.parent.mkdir(parents=True, exist_ok=True)
+        asvc.write_text("\n".join(lines + missing) + "\n", encoding="utf-8")
+        log(f"allowed Moonraker to manage {', '.join(missing)}")
+
+
+def ensure_companion_includes() -> None:
+    """Re-add the Mobileraker update_manager include to moonraker.conf.
+
+    `bootstrap --update configs` replaces moonraker.conf with the stock copy,
+    and Moonraker refuses an [include] that matches no file, so the include
+    lives here (added only when the file exists) rather than in the stock
+    config. OctoApp re-adds its own include every time its service starts.
+    """
+    moonraker_conf = CONFIG_DIR / "moonraker.conf"
+    if not MOBILERAKER_UPDATE_CONF.is_file() or not moonraker_conf.is_file():
+        return
+    directive = f"[include {MOBILERAKER_UPDATE_CONF.name}]"
+    text = moonraker_conf.read_text(encoding="utf-8")
+    if directive in text.splitlines():
+        return
+    moonraker_conf.write_text(text.rstrip("\n") + "\n\n" + directive + "\n", encoding="utf-8")
+    log(f"added {directive} to {moonraker_conf}")
+
+
+def install_mobileraker(*, replace: bool) -> None:
+    cloned = clone_repo(MOBILERAKER_REPO, MOBILERAKER_DIR, branch=None, replace=replace)
+    created = create_venv(MOBILERAKER_ENV, replace=replace or cloned, system_site=True)
+    if cloned or created:
+        _companion_pip_install(
+            MOBILERAKER_ENV, MOBILERAKER_DIR / "scripts" / "mobileraker-requirements.txt")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    if not MOBILERAKER_CONF.exists():
+        ip = get_local_ip()
+        MOBILERAKER_CONF.write_text(
+            "[general]\n"
+            "language: en\n"
+            "include_snapshot: True\n"
+            "\n"
+            "[printer K2 Plus]\n"
+            "moonraker_uri: ws://127.0.0.1:7125/websocket\n"
+            "moonraker_api_key: False\n"
+            f"snapshot_uri: http://{ip}:8080/snapshot\n"
+            "snapshot_rotation: 0\n",
+            encoding="utf-8",
+        )
+        log(f"wrote {MOBILERAKER_CONF}")
+    MOBILERAKER_UPDATE_CONF.write_text(
+        "[update_manager mobileraker]\n"
+        "type: git_repo\n"
+        f"path: {MOBILERAKER_DIR}\n"
+        f"origin: {MOBILERAKER_REPO}.git\n"
+        "primary_branch: main\n"
+        "managed_services: mobileraker\n"
+        f"virtualenv: {MOBILERAKER_ENV}\n"
+        "requirements: scripts/mobileraker-requirements.txt\n",
+        encoding="utf-8",
+    )
+    log(f"wrote {MOBILERAKER_UPDATE_CONF}")
+    _write_unit(
+        "mobileraker",
+        "Mobileraker Companion (push notifications for the Mobileraker app)",
+        f"{MOBILERAKER_ENV}/bin/python3 {MOBILERAKER_DIR}/mobileraker.py "
+        f"-l {LOGS_DIR} -c {MOBILERAKER_CONF}",
+        MOBILERAKER_DIR,
+    )
+
+
+def install_octoapp(*, replace: bool) -> None:
+    cloned = clone_repo(OCTOAPP_REPO, OCTOAPP_DIR, branch=None, replace=replace)
+    created = create_venv(OCTOAPP_ENV, replace=replace or cloned, system_site=True)
+    if cloned or created:
+        _companion_pip_install(OCTOAPP_ENV, OCTOAPP_DIR / "requirements.txt")
+    OCTOAPP_STORE.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    # Same argument blob OctoApp's own installer writes into its service file.
+    plugin_args = {
+        "ConfigFolder": str(CONFIG_DIR),
+        "LogFolder": str(LOGS_DIR),
+        "LocalFileStoragePath": str(OCTOAPP_STORE),
+        "ServiceName": "octoapp",
+        "VirtualEnvPath": str(OCTOAPP_ENV),
+        "RepoRootFolder": str(OCTOAPP_DIR),
+        "IsCompanion": False,
+        "MoonrakerConfigFile": str(CONFIG_DIR / "moonraker.conf"),
+    }
+    blob = base64.urlsafe_b64encode(json.dumps(plugin_args).encode("utf-8")).decode("utf-8")
+    _write_unit(
+        "octoapp",
+        "OctoApp companion (remote monitoring for the OctoApp app)",
+        f'{OCTOAPP_ENV}/bin/python3 -m moonraker_octoapp "{blob}"',
+        OCTOAPP_DIR,
+    )
+
+
+def install_companions(*, replace: bool) -> None:
+    if shutil.which("systemctl") is None:
+        log_warn("systemctl not found; skipping Mobileraker/OctoApp companions")
+        return
+    install_mobileraker(replace=replace)
+    install_octoapp(replace=replace)
+    _ensure_asvc("mobileraker", "octoapp")
+    ensure_companion_includes()
+    run(["systemctl", "daemon-reload"])
+    for svc in ("mobileraker", "octoapp"):
+        run(["systemctl", "enable", svc])
+    service_control("restart", ["mobileraker", "octoapp"])
+    service_control("restart", ["moonraker"])
+    log("Open the Mobileraker or OctoApp app and add this printer at "
+        f"http://{get_local_ip()}:7125 to finish linking")
+
+
 def verify_cartographer_package() -> None:
     python = ROOT / "klippy-env" / "bin" / "python"
     klipper_path = str(ROOT / "klipper")
@@ -1067,6 +1235,8 @@ def update_k2_configs() -> None:
         if changed:
             log(f"restored probe mode {PROBE_MODES[probe_mode][0]}")
 
+    ensure_companion_includes()
+
     service_control("start", ["klipper", "moonraker"])
 
 
@@ -1091,6 +1261,15 @@ def main() -> None:
         "--set-timezone",
         action="store_true",
         help="detect timezone from public IP and apply it via timedatectl, then exit",
+    )
+    mode.add_argument(
+        "--companions",
+        nargs="?",
+        const="install",
+        choices=["install", "replace"],
+        default=None,
+        metavar="install|replace",
+        help="install the Mobileraker and OctoApp remote-monitoring companions (replace reclones them), then exit",
     )
     mode.add_argument(
         "--add-webcam",
@@ -1129,6 +1308,16 @@ def main() -> None:
     if args.add_webcam:
         header("K2 Webcam Registration")
         install_webcam()
+        return
+
+    if args.companions is not None:
+        require_root()
+        require_udisk()
+        require_tool("git")
+        header("K2 Remote Monitoring Companions")
+        with step("Installing Mobileraker and OctoApp companions"):
+            install_companions(replace=args.companions == "replace")
+        success("Companions installed")
         return
 
     if args.probe is not None:
@@ -1299,6 +1488,13 @@ def main() -> None:
     if is_full_run() or should_run("moonraker"):
         with step("Registering webcam"):
             install_webcam()
+
+    if is_full_run():
+        with step("Installing Mobileraker and OctoApp companions"):
+            try:
+                install_companions(replace=False)
+            except (Exception, SystemExit) as exc:
+                log_warn(f"companion install failed ({exc}); retry with: bootstrap --companions")
 
     success("Bootstrap complete")
 

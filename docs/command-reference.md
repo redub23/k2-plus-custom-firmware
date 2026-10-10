@@ -19,17 +19,20 @@ Klipper and Cartographer commands remain in their own documentation.
 | --- | --- |
 | `T<n> [FLUSH=0\|1]` | Performs the full change to zero-based tool slot `<n>`. |
 | `BOX_GO_TO_WASTEBIN` | Parks the printhead at the waste bin. |
+| `BOX_PRIME [LENGTH=mm] [TEMP=C]` | Purges at the waste bin, then cools, snaps and wipes the nozzle exactly like a filament change. `START_PRINT` runs it at the end (length from `start_purge_length`). |
+| `PURGE [LENGTH=mm] [PURGE_TEMP=C]` | Macro wrapper for `BOX_PRIME` used by the touchscreen's Purge button. Defaults to `fallback_purge_length`; heats the nozzle for the loaded filament if it is cold. Refused while printing (pause first). |
 | `NOZZLE_CLEAN` | Runs the configured nozzle-cleaning sequence. |
 | `BOX_LOAD [SLOT=0]` | Loads a physical zero-based CFS slot without the full tool-change policy. |
 | `BOX_UNLOAD [MANUAL=0\|1]` | Fully unloads the active filament. |
 | `SET_CANCEL_UNLOAD [ENABLE=0\|1]` | Enables or disables automatic CFS unload on print cancel. |
 | `CANCEL_PRINT [UNLOAD=0\|1]` | Cancels current print and parks toolhead, unloading CFS filament if enabled (default `1`). |
 | `BOX_CUT [FORCE=0\|1]` | Runs the cutter directly. |
+| `BOX_CUT_OFFSET [OFFSET=mm] [ADJUST=mm] [RESET=1] [TEST=1]` | Trims the cutter X position by up to ±1.5 mm on top of the calibrated `cut_pos_x`. Negative pushes further into the cutter (firmer cut). With no parameters it opens a button dialog on the touchscreen and web UIs. The `CUTTER_OFFSET` macro wraps it for the macro list. Stored in the box state file; survives restarts and recalibration. |
 | `BOX_BUFFER_RETRACT` | Runs the CFS buffer retract phase. |
 | `BOX_DEBUG [RAW=0\|1]` | Prints complete Box, topology, slot, sensor, and RFID diagnostics. |
 | `BOX_RUNOUT_CHECK` | Handles a printhead-sensor runout event. |
 | `PARSE_FLUSH_VOLUMES` | Reads the slicer's flush matrix from the loaded G-code file. |
-| `BOX_SET_ROUTING T0=<slot> [T1=<slot> ...]` | Routes slicer tools to physical CFS slots for the current print. |
+| `BOX_SET_ROUTING T0=<slot> [T1=<slot> ...] [MERGE=1]` | Routes slicer tools to physical CFS slots for the current print. `MERGE=1` changes only the named tools (HelixScreen sends one per remapped tool). Cleared when the print ends. |
 | `BOX_CLEAR_ROUTING` | Clears custom tool routing and restores 1:1 tool-to-slot mapping. |
 | `_BOX_RESUME_CHECK [RETRY=0\|1]` | Validates or recovers Box state before resume. |
 | `_FLUSH_CLEAN_SNAP [RETRACT=0\|1]` | Runs the internal flush, snap, and clean sequence. |
