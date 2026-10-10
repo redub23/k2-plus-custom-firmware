@@ -32,7 +32,7 @@ jobs:
 
       - name: Fetch Upstream
         run: |
-          git remote add upstream https://github.com/Jacob10383/k2-plus-custom-firmware.git || git remote set-url upstream https://github.com/Jacob10383/k2-plus-custom-firmware.git
+          git remote add upstream https://github.com/KennethDoerflein/k2-plus-custom-firmware.git || git remote set-url upstream https://github.com/KennethDoerflein/k2-plus-custom-firmware.git
           git fetch upstream main
 
       - name: Check for new commits
@@ -67,12 +67,12 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           base: main
           branch: automated-upstream-sync
-          title: "chore(upstream): automated sync with upstream Jacob10383/k2-plus-custom-firmware"
-          commit-message: "chore(upstream): sync changes from Jacob10383/k2-plus-custom-firmware"
+          title: "chore(upstream): automated sync with upstream KennethDoerflein/k2-plus-custom-firmware"
+          commit-message: "chore(upstream): sync changes from KennethDoerflein/k2-plus-custom-firmware"
           body: |
             ## Automated Upstream Sync
 
-            New commits were detected and pulled from `upstream/main` (`Jacob10383/k2-plus-custom-firmware`).
+            New commits were detected and pulled from `upstream/main` (`KennethDoerflein/k2-plus-custom-firmware`).
 
             ### Status: ${{ steps.sync.outputs.sync_status == 'clean' && '✅ Clean Merge (Tests Passed)' || '⚠️ Conflicts Detected (Review Required)' }}
 
@@ -80,6 +80,10 @@ jobs:
             - **Compatibility tests**: Executed via `tests/test_compat.py`.
 
             ${{ steps.sync.outputs.sync_status == 'clean' && 'All checks passed cleanly. This PR is ready to merge.' || 'Please review conflicting files flagged in this PR before merging.' }}
+
+            ### After merging
+            On the printer after merging: `bootstrap --update` (bootstrap and Kalico extras).
+            If Klipper halts after an update, revert this merge on GitHub and run the same command again.
           labels: |
             upstream-sync
             automated
