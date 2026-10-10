@@ -851,23 +851,37 @@ def _ensure_asvc(*services: str) -> None:
         log(f"allowed Moonraker to manage {', '.join(missing)}")
 
 
+MOONRAKER_OVERRIDES_CONF = CONFIG_DIR / "moonraker-overrides.conf"
+
+
 def ensure_companion_includes() -> None:
-    """Re-add the Mobileraker update_manager include to moonraker.conf.
+    """Re-add includes for optional Moonraker config files to moonraker.conf.
 
     `bootstrap --update configs` replaces moonraker.conf with the stock copy,
-    and Moonraker refuses an [include] that matches no file, so the include
-    lives here (added only when the file exists) rather than in the stock
-    config. OctoApp re-adds its own include every time its service starts.
+    and Moonraker refuses an [include] that matches no file, so these includes
+    live here (each added only when its file exists) rather than in the stock
+    config:
+      mobileraker-moonraker.conf  Mobileraker's update_manager entry
+      moonraker-overrides.conf    the user's own Moonraker settings, such as
+                                  [spoolman] or [power] devices
+    OctoApp re-adds its own include every time its service starts.
     """
     moonraker_conf = CONFIG_DIR / "moonraker.conf"
-    if not MOBILERAKER_UPDATE_CONF.is_file() or not moonraker_conf.is_file():
+    if not moonraker_conf.is_file():
         return
-    directive = f"[include {MOBILERAKER_UPDATE_CONF.name}]"
     text = moonraker_conf.read_text(encoding="utf-8")
-    if directive in text.splitlines():
+    lines = text.splitlines()
+    added = []
+    for path in (MOBILERAKER_UPDATE_CONF, MOONRAKER_OVERRIDES_CONF):
+        directive = f"[include {path.name}]"
+        if path.is_file() and directive not in lines:
+            added.append(directive)
+    if not added:
         return
-    moonraker_conf.write_text(text.rstrip("\n") + "\n\n" + directive + "\n", encoding="utf-8")
-    log(f"added {directive} to {moonraker_conf}")
+    moonraker_conf.write_text(
+        text.rstrip("\n") + "\n\n" + "\n".join(added) + "\n", encoding="utf-8")
+    for directive in added:
+        log(f"added {directive} to {moonraker_conf}")
 
 
 def install_mobileraker(*, replace: bool) -> None:

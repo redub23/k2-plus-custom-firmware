@@ -25,6 +25,13 @@ and keeps your `SAVE_CONFIG` block, `overrides.cfg`, files you added and your
 probe mode. A copy of the previous configuration is left in
 `printer_data/config/config_backups/`.
 
+`moonraker.conf` is replaced with the stock copy. Keep your own Moonraker
+settings, such as `[spoolman]` or `[power]` devices, in
+`moonraker-overrides.conf` next to it: bootstrap adds
+`[include moonraker-overrides.conf]` to `moonraker.conf` whenever the file
+exists. Likewise, Klipper settings your `SAVE_CONFIG` block depends on (for
+example `heater_power` when the hotend uses MPC) belong in `overrides.cfg`.
+
 ## Replace the printer configuration
 
 ```sh
