@@ -38,7 +38,9 @@ OUTLIER_WINDOW = 9      # samples in the rolling median
 OUTLIER_FLOOR = 20000   # counts; well above idle noise (~450 sd)
 OUTLIER_MADS = 8.0
 MAX_REJECT_FRACTION = 0.1
-MIN_CADENCE_FRACTION = 0.6  # sample gaps that match the ADC rate
+MIN_CADENCE_FRACTION = 0.6
+CFS_POLL_S = 0.1        # CFS buffer/encoder sampling period
+CFS_TIMEOUT = 0.3  # sample gaps that match the ADC rate
 NEVER_TRIGGER = 0x7FFFFFFF
 BASELINE_S = 0.8
 SETTLE_S = 0.8
@@ -91,9 +93,11 @@ class PRTouchFlowMixin:
         used_pa = old_pa if pa is None else pa
 
         capture = {'samples': {}, 'notes': [], 'busy': False,
-                   'buf_len_max': 0, 'page_max': 0}
+                   'buf_len_max': 0, 'page_max': 0, 'cfs': [],
+                   'cfs_busy': False,
+                   'cfs_driver': self._flow_cfs_driver(box)}
         schedule = []
-        timer = None
+        timer = cfs_timer = None
         started = False
         self.gcode.run_script_from_command(
             "SAVE_GCODE_STATE NAME=_prtouch_flow_test")
@@ -109,6 +113,9 @@ class PRTouchFlowMixin:
             self._flow_capture = capture
             timer = self.reactor.register_timer(
                 self._flow_poll_timer, self.reactor.NOW)
+            if capture['cfs_driver'] is not None:
+                cfs_timer = self.reactor.register_timer(
+                    self._flow_cfs_timer, self.reactor.NOW)
             self._wait_print_time(self._estimated_print_time() + BASELINE_S)
             schedule = self._queue_square_wave(
                 toolhead, slow, fast, hold, cycles, move)
@@ -116,6 +123,8 @@ class PRTouchFlowMixin:
         finally:
             if timer is not None:
                 self.reactor.unregister_timer(timer)
+            if cfs_timer is not None:
+                self.reactor.unregister_timer(cfs_timer)
             self._flow_capture = None
             if started:
                 try:
@@ -142,6 +151,8 @@ class PRTouchFlowMixin:
         rows, capture['rejected'] = self.reject_outliers(rows)
         path = self._write_flow_csv(
             rows, slow, fast, hold, sps, used_pa, move)
+        if path and capture['cfs'] and rows:
+            self._write_cfs_csv(path, capture['cfs'], rows[0][4])
         self._report_flow_summary(
             gcmd, rows, schedule, sps, used_pa, move, path, capture)
 
@@ -231,6 +242,48 @@ class PRTouchFlowMixin:
             finally:
                 capture['busy'] = False
         return self.reactor.monotonic() + POLL_S
+
+    @staticmethod
+    def _flow_cfs_driver(box):
+        """Driver for the CFS box feeding the toolhead, if any."""
+        if box is None:
+            return None
+        drivers = getattr(box, 'drivers', None) or {}
+        snap = getattr(box, 'snapshot', None)
+        address = getattr(snap, 'path_box', None)
+        if address not in drivers:
+            address = min(drivers) if drivers else None
+        return drivers.get(address)
+
+    def _flow_cfs_timer(self, eventtime):
+        """Log the CFS buffer state and feed encoder while capturing.
+
+        The buffer spring pulls on the toolhead and the CFS refills it in
+        bursts, so its activity is logged next to the load cell.
+        """
+        capture = self._flow_capture
+        if capture is None:
+            return self.reactor.NEVER
+        if not capture['cfs_busy']:
+            capture['cfs_busy'] = True
+            driver = capture['cfs_driver']
+            try:
+                print_time = self._estimated_print_time()
+                buf = enc = None
+                try:
+                    reply = driver.query_buffer(timeout=CFS_TIMEOUT)
+                    buf = None if reply is None else reply.value
+                except Exception:
+                    pass
+                try:
+                    reply = driver.query_encoder(timeout=CFS_TIMEOUT)
+                    enc = None if reply is None else reply.value
+                except Exception:
+                    pass
+                capture['cfs'].append((print_time, buf, enc))
+            finally:
+                capture['cfs_busy'] = False
+        return self.reactor.monotonic() + CFS_POLL_S
 
     def _read_flow_buffer(self, capture):
         from .prtouch import _decode_prtouch_frame
@@ -334,6 +387,32 @@ class PRTouchFlowMixin:
         period = 1. / sps
         return sum(1 for g in gaps
                    if 0.7 * period <= g <= 1.3 * period) / float(len(gaps))
+
+    @staticmethod
+    def _write_cfs_csv(path, cfs, t0):
+        cfs_path = path[:-4] + "_cfs.csv"
+        try:
+            with open(cfs_path, 'w') as out:
+                out.write("time_s,buffer_state,encoder_mm\n")
+                for print_time, buf, enc in cfs:
+                    out.write("%.3f,%s,%s\n" % (
+                        print_time - t0, '' if buf is None else buf,
+                        '' if enc is None else '%.2f' % enc))
+        except OSError as exc:
+            logging.warning("prtouch flow test: %s", exc)
+
+    @staticmethod
+    def cfs_activity(cfs, schedule):
+        """Per phase: buffer state changes and encoder travel (mm)."""
+        out = []
+        for start, end, rate in schedule:
+            inside = [c for c in cfs if start <= c[0] < end]
+            states = [c[1] for c in inside if c[1] is not None]
+            changes = sum(1 for a, b in zip(states, states[1:]) if a != b)
+            encs = [c[2] for c in inside if c[2] is not None]
+            travel = (max(encs) - min(encs)) if len(encs) > 1 else None
+            out.append((rate, changes, travel))
+        return out
 
     @staticmethod
     def reject_outliers(rows):
@@ -458,6 +537,18 @@ class PRTouchFlowMixin:
                 step = sum(abs(m['step']) for m in metrics) / len(metrics)
                 lines.append("signal/noise %.0fx"
                              % (step / (sum(noise) / len(noise))))
+        if capture['cfs']:
+            polled = [c for c in capture['cfs'] if c[1] is not None]
+            states = sorted(set(c[1] for c in polled))
+            lines.append("CFS: %d polls, buffer states seen %s" % (
+                len(capture['cfs']), states or '-'))
+            lines.append("CFS per phase (changes/feed mm): " + "  ".join(
+                "%g:%d/%s" % (rate, changes,
+                              '-' if travel is None else '%.1f' % travel)
+                for rate, changes, travel
+                in self.cfs_activity(capture['cfs'], schedule)))
+        elif capture['cfs_driver'] is None:
+            lines.append("CFS: no box driver found, buffer not logged")
         if path:
             lines.append("Samples saved to %s" % path)
         lines.extend(capture['notes'])

@@ -379,6 +379,13 @@ class FlowCaptureQuality(unittest.TestCase):
         self.assertEqual(rejected, 1)
         self.assertFalse(flagged[25][5])
 
+    def test_cfs_activity_per_phase(self):
+        cfs = [(0.1 * i, 1 if i < 15 else 2, 0.5 * i) for i in range(30)]
+        act = self.flow.PRTouchFlowMixin.cfs_activity(
+            cfs, [(0.0, 1.0, 2.0), (1.0, 2.0, 12.0), (2.0, 3.0, 2.0)])
+        self.assertEqual([a[1] for a in act], [0, 1, 0])
+        self.assertAlmostEqual(act[1][2], 4.5)
+
     def test_wrong_cadence_is_detected(self):
         # Torn reads: a page of values 5 ms then 0.08 ms apart.
         times, t = [], 0.0
