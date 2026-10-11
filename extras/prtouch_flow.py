@@ -29,8 +29,16 @@ import time
 from . import motion_limits
 
 FILAMENT_AREA = math.pi * (1.75 / 2.0) ** 2
-# CS1237 config register: bits 4-5 select the output rate.
-SPS_BITS = {10: 0x00, 40: 0x10, 640: 0x20, 1280: 0x30}
+# CS1237 config register: bits 4-5 select the output rate. The nozzle
+# firmware samples on its own fast cadence, so the 10 and 40 SPS settings
+# return mostly unfinished conversions; only the fast rates read cleanly.
+SPS_BITS = {640: 0x20, 1280: 0x30}
+DEFAULT_SPS = 640
+OUTLIER_WINDOW = 9      # samples in the rolling median
+OUTLIER_FLOOR = 20000   # counts; well above idle noise (~450 sd)
+OUTLIER_MADS = 8.0
+MAX_REJECT_FRACTION = 0.1
+MIN_CADENCE_FRACTION = 0.6  # sample gaps that match the ADC rate
 NEVER_TRIGGER = 0x7FFFFFFF
 BASELINE_S = 0.8
 SETTLE_S = 0.8
@@ -51,7 +59,7 @@ class PRTouchFlowMixin:
 
     cmd_PRTOUCH_FLOW_TEST_help = (
         "Log the nozzle load cell during a slow/fast extrusion square wave "
-        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=, PA=, "
+        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=640|1280, PA=, "
         "MOVE=0|1)")
 
     # ------------------------------------------------------------------
@@ -61,7 +69,7 @@ class PRTouchFlowMixin:
         fast = gcmd.get_float('FAST', 12., above=0., maxval=40.)
         hold = gcmd.get_float('HOLD', 1.5, minval=.3, maxval=10.)
         cycles = gcmd.get_int('CYCLES', 3, minval=1, maxval=10)
-        sps = gcmd.get_int('SPS', 40)
+        sps = gcmd.get_int('SPS', DEFAULT_SPS)
         move = bool(gcmd.get_int('MOVE', 1, minval=0, maxval=1))
         pa = gcmd.get_float('PA', None, minval=0., maxval=1.)
         if sps not in SPS_BITS:
@@ -131,6 +139,7 @@ class PRTouchFlowMixin:
                 capture['notes'].append("wipe failed: %s" % (exc,))
 
         rows = self._label_samples(capture['samples'], schedule)
+        rows, capture['rejected'] = self.reject_outliers(rows)
         path = self._write_flow_csv(
             rows, slow, fast, hold, sps, used_pa, move)
         self._report_flow_summary(
@@ -287,13 +296,50 @@ class PRTouchFlowMixin:
                           % (slow, fast, hold, sps,
                              'unknown' if pa is None else '%.4f' % pa,
                              int(move)))
-                out.write("time_s,pressure,phase,rate_mm3s\n")
-                for t, value, phase, rate, _abs in rows:
-                    out.write("%.5f,%d,%d,%g\n" % (t, value, phase, rate))
+                out.write("time_s,pressure,phase,rate_mm3s,ok\n")
+                for t, value, phase, rate, _abs, ok in rows:
+                    out.write("%.5f,%d,%d,%g,%d\n"
+                              % (t, value, phase, rate, int(ok)))
         except OSError as exc:
             logging.warning("prtouch flow test: %s", exc)
             return None
         return path
+
+    @staticmethod
+    def cadence_fraction(rows, sps):
+        """Share of sample-to-sample gaps within 30% of 1/sps.
+
+        A healthy capture is mostly back-to-back conversions; garbage reads
+        arrive at whatever cadence the firmware happened to poll.
+        """
+        gaps = [b[0] - a[0] for a, b in zip(rows, rows[1:])]
+        if not gaps:
+            return 0.
+        period = 1. / sps
+        return sum(1 for g in gaps
+                   if 0.7 * period <= g <= 1.3 * period) / float(len(gaps))
+
+    @staticmethod
+    def reject_outliers(rows):
+        """Mark samples far from their neighbours' median as bad.
+
+        Returns (rows with an ok flag appended, number rejected). A torn
+        read of the live buffer shows up as isolated wild values; real
+        pressure changes move the median with them, so they are kept.
+        """
+        values = [r[1] for r in rows]
+        half = OUTLIER_WINDOW // 2
+        flagged, rejected = [], 0
+        for idx, row in enumerate(rows):
+            window = sorted(values[max(0, idx - half):idx + half + 1])
+            median = window[len(window) // 2]
+            deviations = sorted(abs(v - median) for v in window)
+            mad = deviations[len(deviations) // 2]
+            limit = max(OUTLIER_FLOOR, OUTLIER_MADS * mad)
+            ok = abs(row[1] - median) <= limit
+            rejected += not ok
+            flagged.append(tuple(row) + (ok,))
+        return flagged, rejected
 
     @staticmethod
     def _stats(values):
@@ -311,6 +357,7 @@ class PRTouchFlowMixin:
         The response inside a phase is normalised from the previous level
         (0) to this one (1); overshoot is how far past 1 it goes.
         """
+        rows = [r for r in rows if len(r) < 6 or r[5]]
         levels = []
         for start, end, _rate in schedule:
             cut = end - (end - start) * STEADY_FRACTION
@@ -358,7 +405,19 @@ class PRTouchFlowMixin:
                 % (len(rows), expected, duration, sps,
                    (max(gaps) if gaps else 0.) * 1000.,
                    capture['buf_len_max'], capture['page_max']))
-            metrics = self.step_metrics(rows, schedule)
+            rejected = capture.get('rejected', 0)
+            if rejected:
+                lines.append("Rejected %d implausible samples (%.0f%%)"
+                             % (rejected, 100. * rejected / len(rows)))
+            cadence = self.cadence_fraction(rows, sps)
+            if (rejected > MAX_REJECT_FRACTION * len(rows)
+                    or cadence < MIN_CADENCE_FRACTION):
+                lines.append("Capture unreliable (%.0f%% of samples at the "
+                             "ADC rate): metrics skipped."
+                             % (cadence * 100.))
+                metrics = []
+            else:
+                metrics = self.step_metrics(rows, schedule)
             for kind, rising in (("slow->fast", True), ("fast->slow", False)):
                 group = [m for m in metrics if m['rising'] == rising]
                 if not group:

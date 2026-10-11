@@ -348,5 +348,48 @@ class ReleaseFiles(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class FlowCaptureQuality(unittest.TestCase):
+    """The load-cell flow test must refuse to score a garbage capture."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(sys.path.remove, str(ROOT))
+        import importlib
+        self.flow = importlib.import_module("extras.prtouch_flow")
+
+    @staticmethod
+    def rows(times, values):
+        return [(t, v, 0, 0.0, t) for t, v in zip(times, values)]
+
+    def test_clean_capture_passes(self):
+        mixin = self.flow.PRTouchFlowMixin
+        times = [i / 640.0 for i in range(400)]
+        values = [-1097000 + (i % 7) * 100 for i in range(400)]
+        rows = self.rows(times, values)
+        self.assertGreater(mixin.cadence_fraction(rows, 640), 0.9)
+        _flagged, rejected = mixin.reject_outliers(rows)
+        self.assertEqual(rejected, 0)
+
+    def test_isolated_spike_is_rejected(self):
+        mixin = self.flow.PRTouchFlowMixin
+        values = [-1097000] * 50
+        values[25] = 4192263
+        flagged, rejected = mixin.reject_outliers(
+            self.rows([i / 640.0 for i in range(50)], values))
+        self.assertEqual(rejected, 1)
+        self.assertFalse(flagged[25][5])
+
+    def test_wrong_cadence_is_detected(self):
+        # Torn reads: a page of values 5 ms then 0.08 ms apart.
+        times, t = [], 0.0
+        for i in range(200):
+            t += 0.005 if i % 2 else 0.00008
+            times.append(t)
+        rows = self.rows(times, [-1097000] * 200)
+        self.assertLess(
+            self.flow.PRTouchFlowMixin.cadence_fraction(rows, 640),
+            self.flow.MIN_CADENCE_FRACTION)
+
+
 if __name__ == "__main__":
     unittest.main()
