@@ -11,6 +11,7 @@ mismatch statically, with the standard library only (no Klipper needed):
 import ast
 import dataclasses
 import subprocess
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -385,6 +386,41 @@ class FlowCaptureQuality(unittest.TestCase):
             cfs, [(0.0, 1.0, 2.0), (1.0, 2.0, 12.0), (2.0, 3.0, 2.0)])
         self.assertEqual([a[1] for a in act], [0, 1, 0])
         self.assertAlmostEqual(act[1][2], 4.5)
+
+    @staticmethod
+    def square_wave(tau):
+        """First-order pressure response to a 2/12/2/12/2 rate schedule."""
+        schedule = [(1.0 + k, 2.0 + k, 2.0 if k % 2 == 0 else 12.0)
+                    for k in range(5)]
+        rows, level, t = [], 0.0, 0.0
+        while t < 6.0:
+            target = 0.0
+            for start, end, rate in schedule:
+                if start <= t < end:
+                    target = rate * 10000.0
+            level += (target - level) * (1.0 - math.exp(-0.0015625 / tau))
+            rows.append((t, level, 0, 0.0, t, True))
+            t += 0.0015625
+        return rows, schedule
+
+    def test_step_lag_shrinks_with_faster_response(self):
+        mixin = self.flow.PRTouchFlowMixin
+        slow_rise, slow_fall, _ = mixin.step_lag(*self.square_wave(0.08))
+        fast_rise, fast_fall, _ = mixin.step_lag(*self.square_wave(0.02))
+        self.assertGreater(slow_rise, fast_rise)
+        self.assertGreater(slow_fall, fast_fall)
+        self.assertGreater(fast_rise, 0.0)
+
+    def test_pa_from_lags(self):
+        pick = self.flow.PRTouchFlowMixin.pa_from_lags
+        pa, how = pick([(0.02, 0.2), (0.04, 0.1), (0.06, -0.1)])
+        self.assertEqual(how, "interpolated")
+        self.assertAlmostEqual(pa, 0.05)
+        pa, how = pick([(0.02, 0.24), (0.04, 0.15), (0.06, 0.11),
+                        (0.08, 0.04)])
+        self.assertEqual(how, "extrapolated")
+        self.assertTrue(0.08 < pa < 0.11)
+        self.assertIsNone(pick([(0.02, 0.1), (0.04, 0.2), (0.06, 0.3)])[0])
 
     def test_wrong_cadence_is_detected(self):
         # Torn reads: a page of values 5 ms then 0.08 ms apart.

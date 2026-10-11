@@ -22,6 +22,7 @@ stop motion.
 """
 
 import logging
+import json
 import math
 import os
 import time
@@ -42,7 +43,8 @@ MIN_CADENCE_FRACTION = 0.6
 CFS_POLL_S = 0.1        # CFS buffer/encoder sampling period
 CFS_TIMEOUT = 0.3  # sample gaps that match the ADC rate
 NEVER_TRIGGER = 0x7FFFFFFF
-BASELINE_S = 0.8
+BASELINE_S = 2.0        # the prime's pressure takes ~2 s to relax
+IDLE_S = 0.6            # tail of the baseline used as the idle level
 SETTLE_S = 0.8
 POLL_S = 0.015
 MAX_PAGE_REQUEST = 64
@@ -50,6 +52,9 @@ WIGGLE_SPEED = 0.5      # mm/s of X travel while extruding
 STEADY_FRACTION = 0.4   # last part of a phase used as its steady level
 AIR_Z = 40.             # mm above the bed for PLACE=air
 PRIME_MM = 1.5          # undoes the previous wipe's snap retract
+LAG_WINDOW_S = 0.3      # response window scored after each rate change
+PA_TABLE_FILE = 'pa_calibration.json'
+PA_MAX = 0.2
 
 
 class PRTouchFlowMixin:
@@ -60,6 +65,11 @@ class PRTouchFlowMixin:
         self.gcode.register_command(
             'PRTOUCH_FLOW_TEST', self.cmd_PRTOUCH_FLOW_TEST,
             desc=self.cmd_PRTOUCH_FLOW_TEST_help)
+        self.gcode.register_command(
+            'PRTOUCH_PA_CALIBRATE', self.cmd_PRTOUCH_PA_CALIBRATE,
+            desc=self.cmd_PRTOUCH_PA_CALIBRATE_help)
+        self.gcode.register_command(
+            'PA_APPLY', self.cmd_PA_APPLY, desc=self.cmd_PA_APPLY_help)
 
     cmd_PRTOUCH_FLOW_TEST_help = (
         "Log the nozzle load cell during a slow/fast extrusion square wave "
@@ -89,11 +99,171 @@ class PRTouchFlowMixin:
             raise gcmd.error("prtouch is busy")
         self._require_flow_test_conditions(gcmd)
 
+        rows, schedule, capture, used_pa = self._flow_run(
+            slow, fast, hold, cycles, sps, move, fill, place, pa)
+        path = self._write_flow_csv(
+            rows, slow, fast, hold, sps, used_pa, move)
+        if path and capture['cfs'] and rows:
+            self._write_cfs_csv(path, capture['cfs'], rows[0][4])
+        self._report_flow_summary(
+            gcmd, rows, schedule, sps, used_pa, move, path, capture)
+
+    cmd_PRTOUCH_PA_CALIBRATE_help = (
+        "Sweep pressure advance over the bed centre and pick the value where "
+        "the nozzle load cell follows rate changes without lag or overshoot "
+        "(START=, STOP=, STEP=, CYCLES=, MATERIAL=, SAVE=1)")
+
+    def cmd_PRTOUCH_PA_CALIBRATE(self, gcmd):
+        start = gcmd.get_float('START', 0.02, minval=0., maxval=PA_MAX)
+        stop = gcmd.get_float('STOP', 0.12, above=start, maxval=PA_MAX)
+        step = gcmd.get_float('STEP', 0.02, minval=0.005)
+        cycles = gcmd.get_int('CYCLES', 3, minval=2, maxval=6)
+        slow = gcmd.get_float('SLOW', 2., above=0., maxval=40.)
+        fast = gcmd.get_float('FAST', 12., above=slow, maxval=40.)
+        hold = gcmd.get_float('HOLD', 1.0, minval=.5, maxval=3.)
+        material = gcmd.get('MATERIAL', '').strip().upper()
+        save = bool(gcmd.get_int('SAVE', 0, minval=0, maxval=1))
+        if save and not material:
+            raise gcmd.error("SAVE=1 needs MATERIAL=")
+        values = []
+        k = start
+        while k <= stop + 1e-9 and len(values) < 12:
+            values.append(round(k, 4))
+            k += step
+        if len(values) < 3:
+            raise gcmd.error("Sweep needs at least 3 PA values")
+        if self._armed or self._flow_capture is not None:
+            raise gcmd.error("prtouch is busy")
+        self._require_flow_test_conditions(gcmd)
+        gcmd.respond_info(
+            "PA calibration: %d runs (%s) over the bed centre; about %.0f mm "
+            "of filament will land on the bed."
+            % (len(values), ", ".join("%g" % v for v in values),
+               len(values) * (PRIME_MM + (cycles * (fast + slow) + slow)
+                              * hold / FILAMENT_AREA)))
+        box = self.printer.lookup_object('box', None)
+        results = []
+        try:
+            for idx, pa in enumerate(values):
+                rows, schedule, capture, _ = self._flow_run(
+                    slow, fast, hold, cycles, DEFAULT_SPS, True, True, 'air',
+                    pa, wipe=False, in_air=idx > 0)
+                path = self._write_flow_csv(
+                    rows, slow, fast, hold, DEFAULT_SPS, pa, True)
+                reliable = (
+                    rows and self.cadence_fraction(rows, DEFAULT_SPS)
+                    >= MIN_CADENCE_FRACTION
+                    and capture.get('rejected', 0)
+                    <= MAX_REJECT_FRACTION * len(rows))
+                rise = fall = None
+                if reliable:
+                    rise, fall, _n = self.step_lag(rows, schedule)
+                lag = None
+                if rise is not None and fall is not None:
+                    lag = (rise + fall) / 2.
+                results.append((pa, lag, rise, fall))
+                gcmd.respond_info(
+                    "PA %.3f: lag %s (rise %s, fall %s)%s"
+                    % (pa, '-' if lag is None else '%+.3f' % lag,
+                       '-' if rise is None else '%+.3f' % rise,
+                       '-' if fall is None else '%+.3f' % fall,
+                       '' if reliable else ' - capture unreliable, skipped'))
+                if path:
+                    logging.info("prtouch PA calibration: %s", path)
+        finally:
+            if box is not None:
+                self._flow_wipe(box, [])
+        best, how = self.pa_from_lags([(pa, lag) for pa, lag, _r, _f
+                                       in results])
+        self._write_pa_sweep(results, best)
+        if best is None:
+            raise gcmd.error("PA calibration failed: %s" % (how,))
+        best = max(0., min(PA_MAX, best))
+        msg = "Calibrated pressure advance: %.4f (%s)" % (best, how)
+        if save:
+            self._save_pa(material, best)
+            msg += "; saved for %s, START_PRINT will use it" % (material,)
+        else:
+            msg += ("; run SET_PRESSURE_ADVANCE ADVANCE=%.4f to try it, or "
+                    "repeat with MATERIAL=<type> SAVE=1 to keep it" % (best,))
+        gcmd.respond_info(msg)
+
+    cmd_PA_APPLY_help = (
+        "Set pressure advance from the calibration table for MATERIAL=, "
+        "or FALLBACK= when that material has no calibrated value")
+
+    def cmd_PA_APPLY(self, gcmd):
+        material = gcmd.get('MATERIAL', '').strip().upper()
+        fallback = gcmd.get_float('FALLBACK', None, minval=0., maxval=1.)
+        table = self._load_pa_table()
+        entry = table.get(material) if material else None
+        if entry is None:
+            if not material and fallback is None:
+                gcmd.respond_info("Calibrated PA: %s" % (
+                    ", ".join("%s %.4f" % (m, e['pa'])
+                              for m, e in sorted(table.items())) or "none"))
+                return
+            if fallback is None:
+                gcmd.respond_info("No calibrated PA for %s" % (material,))
+                return
+            pa, source = fallback, "default"
+        else:
+            pa, source = entry['pa'], "calibrated %s" % (entry.get('date', ''),)
+        self.gcode.run_script_from_command(
+            "SET_PRESSURE_ADVANCE ADVANCE=%.4f" % (pa,))
+        gcmd.respond_info("Pressure advance %.4f for %s (%s)"
+                          % (pa, material or '-', source.strip()))
+
+    def _pa_table_path(self):
+        config_file = self.printer.get_start_args().get('config_file', '')
+        return os.path.join(os.path.dirname(config_file) or '.',
+                            PA_TABLE_FILE)
+
+    def _load_pa_table(self):
+        try:
+            with open(self._pa_table_path()) as handle:
+                table = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        return {str(k).upper(): v for k, v in table.items()
+                if isinstance(v, dict) and isinstance(v.get('pa'), (int, float))}
+
+    def _save_pa(self, material, pa):
+        table = self._load_pa_table()
+        table[material] = {'pa': round(pa, 4),
+                           'date': time.strftime('%Y-%m-%d')}
+        path = self._pa_table_path()
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as handle:
+            json.dump(table, handle, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+
+    def _write_pa_sweep(self, results, best):
+        log_file = self.printer.get_start_args().get('log_file')
+        folder = os.path.dirname(log_file) if log_file else '/tmp'
+        path = os.path.join(folder, time.strftime(
+            'prtouch_pa_sweep_%Y%m%d_%H%M%S.csv'))
+        try:
+            with open(path, 'w') as out:
+                out.write("# best=%s\n" % ('' if best is None else
+                                            '%.4f' % best))
+                out.write("pa,lag,rise,fall\n")
+                for pa, lag, rise, fall in results:
+                    out.write("%g,%s,%s,%s\n" % (pa, *(
+                        '' if v is None else '%.4f' % v
+                        for v in (lag, rise, fall))))
+        except OSError as exc:
+            logging.warning("prtouch PA calibration: %s", exc)
+
+    def _flow_run(self, slow, fast, hold, cycles, sps, move, fill, place,
+                  pa, wipe=True, in_air=False):
+        """One captured square wave; returns (rows, schedule, capture, pa)."""
         toolhead = self.printer.lookup_object('toolhead')
         extruder = toolhead.get_extruder()
         box = self.printer.lookup_object('box', None)
         if place == 'air':
-            self._move_to_free_air(toolhead)
+            if not in_air:
+                self._move_to_free_air(toolhead)
         elif box is not None:
             box.move_to_wastebin()
         toolhead.wait_moves()
@@ -164,21 +334,19 @@ class PRTouchFlowMixin:
             motion_limits.restore_motion_limits(
                 self.gcode, "_prtouch_flow_limits", include_gcode=True,
                 move=0)
-        if box is not None:
-            try:
-                box.move_to_wastebin()
-                box.flush_clean_snap(fan_after=0.0)
-            except Exception as exc:
-                capture['notes'].append("wipe failed: %s" % (exc,))
+        if box is not None and wipe:
+            self._flow_wipe(box, capture['notes'])
 
         rows = self._label_samples(capture['samples'], schedule)
         rows, capture['rejected'] = self.reject_outliers(rows)
-        path = self._write_flow_csv(
-            rows, slow, fast, hold, sps, used_pa, move)
-        if path and capture['cfs'] and rows:
-            self._write_cfs_csv(path, capture['cfs'], rows[0][4])
-        self._report_flow_summary(
-            gcmd, rows, schedule, sps, used_pa, move, path, capture)
+        return rows, schedule, capture, used_pa
+
+    def _flow_wipe(self, box, notes):
+        try:
+            box.move_to_wastebin()
+            box.flush_clean_snap(fan_after=0.0)
+        except Exception as exc:
+            notes.append("wipe failed: %s" % (exc,))
 
     # ------------------------------------------------------------------
 
@@ -398,12 +566,73 @@ class PRTouchFlowMixin:
         return path
 
     @classmethod
+    def step_lag(cls, rows, schedule, window=LAG_WINDOW_S, skip=1):
+        """How far pressure trails each rate change, normalised.
+
+        For every transition after the first `skip`, each sample in the
+        first `window` seconds scores 1 - (y - y0) / (y1 - y0), with y0/y1
+        the steady levels of the phases either side. The mean is 0 for an
+        instant step, positive while pressure lags (PA too low) and
+        negative when it overshoots (PA too high).
+        Returns (rise, fall, samples); rise/fall are None without data.
+        """
+        good = [r for r in rows if len(r) < 6 or r[5]]
+        levels = []
+        for start, end, _rate in schedule:
+            cut = end - (end - start) * STEADY_FRACTION
+            levels.append(cls._stats(
+                [r[1] for r in good if cut <= r[4] < end])[0])
+        scores = {True: [], False: []}
+        for idx in range(1 + skip, len(schedule)):
+            y0, y1 = levels[idx - 1], levels[idx]
+            if y0 is None or y1 is None or y1 == y0:
+                continue
+            start = schedule[idx][0]
+            rising = schedule[idx][2] > schedule[idx - 1][2]
+            scores[rising].extend(
+                1. - (r[1] - y0) / (y1 - y0) for r in good
+                if start <= r[4] < start + window)
+        def mean(vals):
+            return sum(vals) / len(vals) if vals else None
+        return (mean(scores[True]), mean(scores[False]),
+                len(scores[True]) + len(scores[False]))
+
+    @staticmethod
+    def pa_from_lags(points):
+        """PA where the lag crosses zero, from [(pa, lag)] sorted by pa.
+
+        Interpolates across the first sign change; without one, extrapolates
+        a least-squares line. Returns (pa, how) or (None, reason).
+        """
+        points = sorted(p for p in points if p[1] is not None)
+        if len(points) < 3:
+            return None, "too few usable runs"
+        for (k0, l0), (k1, l1) in zip(points, points[1:]):
+            if l0 > 0. >= l1:
+                return k0 + (k1 - k0) * l0 / (l0 - l1), "interpolated"
+        n = float(len(points))
+        mk = sum(k for k, _ in points) / n
+        ml = sum(l for _, l in points) / n
+        sxx = sum((k - mk) ** 2 for k, _ in points)
+        slope = sum((k - mk) * (l - ml) for k, l in points) / sxx
+        if slope >= 0.:
+            return None, "lag does not fall as PA rises"
+        pa = mk - ml / slope
+        lo, hi = points[0][0], points[-1][0]
+        span = hi - lo
+        if not (lo - span <= pa <= hi + span):
+            return None, "zero crossing far outside the sweep"
+        return pa, "extrapolated"
+
+    @classmethod
     def phase_levels(cls, rows, schedule):
         """Steady level of each phase relative to the idle baseline."""
         good = [r for r in rows if len(r) < 6 or r[5]]
         if not schedule:
             return None, []
-        idle, _ = cls._stats([r[1] for r in good if r[4] < schedule[0][0]])
+        first = schedule[0][0]
+        idle, _ = cls._stats([r[1] for r in good
+                              if first - IDLE_S <= r[4] < first])
         if idle is None:
             return None, []
         levels = []
