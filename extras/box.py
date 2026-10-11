@@ -2992,6 +2992,27 @@ class Box(BoxRoutingMixin, BoxDryerMixin, BoxCutOffsetMixin):
                 "%s recovery did not reach verified loaded state" % self.slot_label(slot))
         return True
 
+    def fill_buffer(self):
+        """Top up the CFS buffer for the loaded slot; return mm fed or None.
+
+        Uses the loaded-path recovery sequence: tracking off, buffer fill
+        (load stage 6), tracking back on and verified.
+        """
+        fault_generation = self.fault_generation
+        with self._operation():
+            live = self.read_live_state(include_topology=False)
+            slot = live.loaded_slot
+            if not (self.is_physical_slot(slot) and live.filament_detected):
+                raise BoxError("No CFS slot is loaded at the toolhead")
+            driver, address, local = self._driver_for_slot(slot)
+            start = self._optional_encoder(driver)
+            self._recover_loaded_path(
+                slot, driver, address, local, fault_generation)
+            end = self._optional_encoder(driver)
+        if start is None or end is None:
+            return None
+        return abs(end - start)
+
     def physical_unload(self, allow_extruder_retract=True,
                         fault_generation=None):
         if fault_generation is None:

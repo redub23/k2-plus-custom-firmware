@@ -61,7 +61,7 @@ class PRTouchFlowMixin:
 
     cmd_PRTOUCH_FLOW_TEST_help = (
         "Log the nozzle load cell during a slow/fast extrusion square wave "
-        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=640|1280, PA=, "
+        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=640|1280, PA=, FILL=, "
         "MOVE=0|1)")
 
     # ------------------------------------------------------------------
@@ -69,10 +69,11 @@ class PRTouchFlowMixin:
     def cmd_PRTOUCH_FLOW_TEST(self, gcmd):
         slow = gcmd.get_float('SLOW', 2., above=0., maxval=40.)
         fast = gcmd.get_float('FAST', 12., above=0., maxval=40.)
-        hold = gcmd.get_float('HOLD', 1.5, minval=.3, maxval=10.)
+        hold = gcmd.get_float('HOLD', 1.0, minval=.3, maxval=10.)
         cycles = gcmd.get_int('CYCLES', 3, minval=1, maxval=10)
         sps = gcmd.get_int('SPS', DEFAULT_SPS)
         move = bool(gcmd.get_int('MOVE', 1, minval=0, maxval=1))
+        fill = bool(gcmd.get_int('FILL', 1, minval=0, maxval=1))
         pa = gcmd.get_float('PA', None, minval=0., maxval=1.)
         if sps not in SPS_BITS:
             raise gcmd.error("SPS must be one of %s"
@@ -89,6 +90,16 @@ class PRTouchFlowMixin:
         if box is not None:
             box.move_to_wastebin()
         toolhead.wait_moves()
+        fill_note = None
+        if box is not None and fill:
+            # The buffer spring pulls on the toolhead once its slack is
+            # used up, which masks the nozzle pressure; start with it full.
+            try:
+                fed = box.fill_buffer()
+                fill_note = ("CFS buffer topped up"
+                             + ("" if fed is None else " (%.1f mm fed)" % fed))
+            except Exception as exc:
+                fill_note = "CFS buffer top-up skipped: %s" % (exc,)
         old_pa = self._current_pressure_advance(extruder)
         used_pa = old_pa if pa is None else pa
 
@@ -96,6 +107,8 @@ class PRTouchFlowMixin:
                    'buf_len_max': 0, 'page_max': 0, 'cfs': [],
                    'cfs_busy': False,
                    'cfs_driver': self._flow_cfs_driver(box)}
+        if fill_note:
+            capture['notes'].append(fill_note)
         schedule = []
         timer = cfs_timer = None
         started = False
@@ -537,6 +550,10 @@ class PRTouchFlowMixin:
                 step = sum(abs(m['step']) for m in metrics) / len(metrics)
                 lines.append("signal/noise %.0fx"
                              % (step / (sum(noise) / len(noise))))
+        if schedule:
+            used = sum((end - start) * rate for start, end, rate
+                       in schedule) / FILAMENT_AREA
+            lines.append("Filament used: %.1f mm" % used)
         if capture['cfs']:
             polled = [c for c in capture['cfs'] if c[1] is not None]
             states = sorted(set(c[1] for c in polled))
