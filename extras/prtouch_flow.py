@@ -48,6 +48,8 @@ POLL_S = 0.015
 MAX_PAGE_REQUEST = 64
 WIGGLE_SPEED = 0.5      # mm/s of X travel while extruding
 STEADY_FRACTION = 0.4   # last part of a phase used as its steady level
+AIR_Z = 40.             # mm above the bed for PLACE=air
+PRIME_MM = 1.5          # undoes the previous wipe's snap retract
 
 
 class PRTouchFlowMixin:
@@ -61,7 +63,7 @@ class PRTouchFlowMixin:
 
     cmd_PRTOUCH_FLOW_TEST_help = (
         "Log the nozzle load cell during a slow/fast extrusion square wave "
-        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=640|1280, PA=, FILL=, "
+        "at the wastebin (SLOW=, FAST= mm^3/s, HOLD= s, CYCLES=, SPS=640|1280, PA=, FILL=, PLACE=bin|air, "
         "MOVE=0|1)")
 
     # ------------------------------------------------------------------
@@ -74,6 +76,9 @@ class PRTouchFlowMixin:
         sps = gcmd.get_int('SPS', DEFAULT_SPS)
         move = bool(gcmd.get_int('MOVE', 1, minval=0, maxval=1))
         fill = bool(gcmd.get_int('FILL', 1, minval=0, maxval=1))
+        place = gcmd.get('PLACE', 'bin').lower()
+        if place not in ('bin', 'air'):
+            raise gcmd.error("PLACE must be bin or air")
         pa = gcmd.get_float('PA', None, minval=0., maxval=1.)
         if sps not in SPS_BITS:
             raise gcmd.error("SPS must be one of %s"
@@ -87,7 +92,9 @@ class PRTouchFlowMixin:
         toolhead = self.printer.lookup_object('toolhead')
         extruder = toolhead.get_extruder()
         box = self.printer.lookup_object('box', None)
-        if box is not None:
+        if place == 'air':
+            self._move_to_free_air(toolhead)
+        elif box is not None:
             box.move_to_wastebin()
         toolhead.wait_moves()
         fill_note = None
@@ -129,6 +136,10 @@ class PRTouchFlowMixin:
             if capture['cfs_driver'] is not None:
                 cfs_timer = self.reactor.register_timer(
                     self._flow_cfs_timer, self.reactor.NOW)
+            self.gcode.run_script_from_command("M83")
+            self.gcode.run_script_from_command(
+                "G1 E%.2f F%.1f" % (PRIME_MM, slow / FILAMENT_AREA * 60.))
+            toolhead.wait_moves()
             self._wait_print_time(self._estimated_print_time() + BASELINE_S)
             schedule = self._queue_square_wave(
                 toolhead, slow, fast, hold, cycles, move)
@@ -187,6 +198,21 @@ class PRTouchFlowMixin:
         homed = toolhead.get_status(eventtime).get('homed_axes', '')
         if 'x' not in homed or 'y' not in homed:
             self.gcode.run_script_from_command("HOME_IF_NEEDED AXIS=XY")
+
+    def _move_to_free_air(self, toolhead):
+        """Park over the bed centre, high enough that nothing touches the
+        extrudate, so the load cell sees only the extrusion itself."""
+        status = toolhead.get_status(self.reactor.monotonic())
+        if 'z' not in status.get('homed_axes', ''):
+            self.gcode.run_script_from_command("G28")
+            status = toolhead.get_status(self.reactor.monotonic())
+        lo, hi = status['axis_minimum'], status['axis_maximum']
+        z = min(hi[2] - 5., max(toolhead.get_position()[2], AIR_Z))
+        self.gcode.run_script_from_command("G90")
+        self.gcode.run_script_from_command("G1 Z%.2f F600" % (z,))
+        self.gcode.run_script_from_command(
+            "G1 X%.2f Y%.2f F6000" % ((lo[0] + hi[0]) / 2.,
+                                      (lo[1] + hi[1]) / 2.))
 
     @staticmethod
     def _current_pressure_advance(extruder):
