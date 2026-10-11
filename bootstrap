@@ -670,15 +670,25 @@ def install_toolcam() -> bool:
         f"USTREAMER_FPS={TOOLCAM_FPS}\n"
     )
     env_file = USTREAMER_ENV_DIR / "toolcam.env"
-    changed = not env_file.is_file() or env_file.read_text(encoding="utf-8") != env
+    first_install = not env_file.is_file()
+    changed = first_install or env_file.read_text(encoding="utf-8") != env
     if changed:
         USTREAMER_ENV_DIR.mkdir(parents=True, exist_ok=True)
         env_file.write_text(env, encoding="utf-8")
         log(f"wrote {env_file} ({dev.name})")
     _ensure_asvc("ustreamer@toolcam")
-    subprocess.run(["systemctl", "enable", "ustreamer@toolcam"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    service_control("restart" if changed else "start", ["ustreamer@toolcam"])
+    # The camera's light is on whenever the stream holds the device, so the
+    # user may keep this service stopped or disabled; only the first install
+    # enables it, and later runs restart it only if it is already running.
+    if first_install:
+        subprocess.run(["systemctl", "enable", "ustreamer@toolcam"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        service_control("start", ["ustreamer@toolcam"])
+    elif changed:
+        active = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "ustreamer@toolcam"]).returncode == 0
+        if active:
+            service_control("restart", ["ustreamer@toolcam"])
     return True
 
 
