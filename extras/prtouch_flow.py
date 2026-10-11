@@ -111,7 +111,7 @@ class PRTouchFlowMixin:
     cmd_PRTOUCH_PA_CALIBRATE_help = (
         "Sweep pressure advance over the bed centre and pick the value where "
         "the nozzle load cell follows rate changes without lag or overshoot "
-        "(START=, STOP=, STEP=, CYCLES=, MATERIAL=, SAVE=1)")
+        "(START=, STOP=, STEP=, PASSES=, CYCLES=, MATERIAL=, SAVE=1)")
 
     def cmd_PRTOUCH_PA_CALIBRATE(self, gcmd):
         start = gcmd.get_float('START', 0.02, minval=0., maxval=PA_MAX)
@@ -123,6 +123,7 @@ class PRTouchFlowMixin:
         hold = gcmd.get_float('HOLD', 1.0, minval=.5, maxval=3.)
         material = gcmd.get('MATERIAL', '').strip().upper()
         save = bool(gcmd.get_int('SAVE', 0, minval=0, maxval=1))
+        passes = gcmd.get_int('PASSES', 2, minval=1, maxval=3)
         if save and not material:
             raise gcmd.error("SAVE=1 needs MATERIAL=")
         values = []
@@ -135,16 +136,18 @@ class PRTouchFlowMixin:
         if self._armed or self._flow_capture is not None:
             raise gcmd.error("prtouch is busy")
         self._require_flow_test_conditions(gcmd)
+        runs = values * passes
         gcmd.respond_info(
-            "PA calibration: %d runs (%s) over the bed centre; about %.0f mm "
-            "of filament will land on the bed."
-            % (len(values), ", ".join("%g" % v for v in values),
-               len(values) * (PRIME_MM + (cycles * (fast + slow) + slow)
-                              * hold / FILAMENT_AREA)))
+            "PA calibration: %d runs (%s, %d pass%s) over the bed centre; "
+            "about %.0f mm of filament will land on the bed."
+            % (len(runs), ", ".join("%g" % v for v in values), passes,
+               '' if passes == 1 else 'es',
+               len(runs) * (PRIME_MM + (cycles * (fast + slow) + slow)
+                            * hold / FILAMENT_AREA)))
         box = self.printer.lookup_object('box', None)
         results = []
         try:
-            for idx, pa in enumerate(values):
+            for idx, pa in enumerate(runs):
                 rows, schedule, capture, _ = self._flow_run(
                     slow, fast, hold, cycles, DEFAULT_SPS, True, True, 'air',
                     pa, wipe=False, in_air=idx > 0)
@@ -158,23 +161,23 @@ class PRTouchFlowMixin:
                 rise = fall = None
                 if reliable:
                     rise, fall, _n = self.step_lag(rows, schedule)
-                lag = None
-                if rise is not None and fall is not None:
-                    lag = (rise + fall) / 2.
+                # Score the slowdowns only: speed-ups keep a residual lag
+                # that PA cannot remove, which biased the pick high when
+                # checked against a printed PA pattern.
+                lag = fall
                 results.append((pa, lag, rise, fall))
                 gcmd.respond_info(
-                    "PA %.3f: lag %s (rise %s, fall %s)%s"
-                    % (pa, '-' if lag is None else '%+.3f' % lag,
+                    "PA %.3f: lag %s (speed-up %s)%s"
+                    % (pa, '-' if fall is None else '%+.3f' % fall,
                        '-' if rise is None else '%+.3f' % rise,
-                       '-' if fall is None else '%+.3f' % fall,
                        '' if reliable else ' - capture unreliable, skipped'))
                 if path:
                     logging.info("prtouch PA calibration: %s", path)
         finally:
             if box is not None:
                 self._flow_wipe(box, [])
-        best, how = self.pa_from_lags([(pa, lag) for pa, lag, _r, _f
-                                       in results])
+        best, how = self.pa_from_lags(self.average_lags(
+            [(pa, lag) for pa, lag, _r, _f in results]))
         self._write_pa_sweep(results, best)
         if best is None:
             raise gcmd.error("PA calibration failed: %s" % (how,))
@@ -596,6 +599,15 @@ class PRTouchFlowMixin:
             return sum(vals) / len(vals) if vals else None
         return (mean(scores[True]), mean(scores[False]),
                 len(scores[True]) + len(scores[False]))
+
+    @staticmethod
+    def average_lags(points):
+        """Mean lag per PA over repeated passes, skipping missing runs."""
+        grouped = {}
+        for pa, lag in points:
+            if lag is not None:
+                grouped.setdefault(pa, []).append(lag)
+        return sorted((pa, sum(v) / len(v)) for pa, v in grouped.items())
 
     @staticmethod
     def pa_from_lags(points):

@@ -411,6 +411,13 @@ class FlowCaptureQuality(unittest.TestCase):
         self.assertGreater(slow_fall, fast_fall)
         self.assertGreater(fast_rise, 0.0)
 
+    def test_average_lags(self):
+        avg = self.flow.PRTouchFlowMixin.average_lags(
+            [(0.02, 0.2), (0.04, 0.1), (0.02, 0.4), (0.04, None)])
+        self.assertEqual([p for p, _ in avg], [0.02, 0.04])
+        self.assertAlmostEqual(avg[0][1], 0.3)
+        self.assertAlmostEqual(avg[1][1], 0.1)
+
     def test_pa_from_lags(self):
         pick = self.flow.PRTouchFlowMixin.pa_from_lags
         pa, how = pick([(0.02, 0.2), (0.04, 0.1), (0.06, -0.1)])
