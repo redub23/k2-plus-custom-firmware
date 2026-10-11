@@ -65,7 +65,7 @@ replaces everything except HelixScreen.
 | `bootstrap --probe` | Show the current probe mode. |
 | `bootstrap --probe <mode>` | Change probe mode to `carto`, `mix` or `prtouch`. See [Calibration](calibration.md#probe-modes). |
 | `bootstrap --set-timezone` | Detect the timezone from the public IP and apply it. |
-| `bootstrap --add-webcam` | Register the front webcam with Moonraker. |
+| `bootstrap --add-webcam` | Serve the toolhead camera (if fitted) on port 8081 and register the Front and Toolhead webcams with Moonraker. |
 
 ## Switch between custom and stock firmware
 

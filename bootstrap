@@ -54,7 +54,13 @@ HELIX_ASSET = "helixscreen-k2.zip"
 HELIX_DIR = ROOT / "helixscreen"
 
 
-MOONRAKER_ASVC = "klipper_mcu\nhelixscreen\nustreamer@stockcam\nmobileraker\noctoapp\n"
+MOONRAKER_ASVC = "klipper_mcu\nhelixscreen\nustreamer@stockcam\nustreamer@toolcam\nmobileraker\noctoapp\n"
+V4L_BY_ID = Path("/dev/v4l/by-id")
+USTREAMER_ENV_DIR = Path("/etc/ustreamer")
+TOOLCAM_MATCH = "XWF-1080p6"
+TOOLCAM_PORT = 8081
+TOOLCAM_RESOLUTION = "1600x1200"
+TOOLCAM_FPS = 5
 
 # Remote-monitoring companions for the Mobileraker and OctoApp phone apps.
 MOBILERAKER_REPO = "https://github.com/Clon1998/mobileraker_companion"
@@ -638,23 +644,73 @@ def wait_for_moonraker(timeout: int = 120) -> bool:
     return False
 
 
+def find_toolcam() -> Optional[Path]:
+    """The toolhead camera's stable /dev/v4l/by-id path, if one is attached."""
+    if not V4L_BY_ID.is_dir():
+        return None
+    for dev in sorted(V4L_BY_ID.iterdir()):
+        if TOOLCAM_MATCH in dev.name and dev.name.endswith("video-index0"):
+            return dev
+    return None
+
+
+def install_toolcam() -> bool:
+    """Serve the toolhead camera on port 8081 via the ustreamer@ template."""
+    dev = find_toolcam()
+    if dev is None:
+        log("no toolhead camera found; skipping its stream")
+        return False
+    if not Path("/etc/systemd/system/ustreamer@.service").is_file():
+        log_warn("ustreamer@.service is missing; cannot serve the toolhead camera")
+        return False
+    env = (
+        f"VIDEO_DEV={dev}\n"
+        f"USTREAMER_PORT={TOOLCAM_PORT}\n"
+        f"USTREAMER_RESOLUTION={TOOLCAM_RESOLUTION}\n"
+        f"USTREAMER_FPS={TOOLCAM_FPS}\n"
+    )
+    env_file = USTREAMER_ENV_DIR / "toolcam.env"
+    changed = not env_file.is_file() or env_file.read_text(encoding="utf-8") != env
+    if changed:
+        USTREAMER_ENV_DIR.mkdir(parents=True, exist_ok=True)
+        env_file.write_text(env, encoding="utf-8")
+        log(f"wrote {env_file} ({dev.name})")
+    _ensure_asvc("ustreamer@toolcam")
+    subprocess.run(["systemctl", "enable", "ustreamer@toolcam"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    service_control("restart" if changed else "start", ["ustreamer@toolcam"])
+    return True
+
+
 def install_webcam() -> None:
     log("waiting for Moonraker...")
     if not wait_for_moonraker():
         log_warn("Moonraker webcam API did not come up in 120s — skipping webcam registration")
         return
+    register_webcam("Front", 8080, "4:3", 30)
+    if install_toolcam():
+        register_webcam("Toolhead", TOOLCAM_PORT, "4:3", TOOLCAM_FPS)
+
+
+def register_webcam(name: str, port: int, aspect: str, fps: int) -> None:
+    try:
+        listed = moonraker_json("/server/webcams/list")["result"]["webcams"]
+    except Exception:
+        listed = []
+    existing = next((cam for cam in listed if cam.get("name") == name), None)
     ip = get_local_ip()
     payload = json.dumps({
-        "name": "Front",
+        **({"uid": existing["uid"]} if existing and existing.get("uid") else {}),
+        "name": name,
         "enabled": True,
         "icon": "mdiWebcam",
-        "aspect_ratio": "4:3",
-        "target_fps": 30,
-        "target_fps_idle": 30,
+        "aspect_ratio": aspect,
+        "target_fps": fps,
+        "target_fps_idle": fps,
         "location": "printer",
         "service": "uv4l-mjpeg",
-        "stream_url": f"http://{ip}:8080/stream",
-        "snapshot_url": f"http://{ip}:8080/snapshot",
+        "stream_url": f"http://{ip}:{port}/stream",
+        "snapshot_url": f"http://{ip}:{port}/snapshot",
         "flip_horizontal": False,
         "flip_vertical": False,
         "rotation": 0,
@@ -668,7 +724,7 @@ def install_webcam() -> None:
     with urllib.request.urlopen(req, timeout=10) as resp:
         result = json.load(resp)
     uid = result["result"]["webcam"]["uid"]
-    log(f"registered webcam 'Front' ({ip}) uid={uid}")
+    log(f"registered webcam '{name}' ({ip}:{port}) uid={uid}")
 
 
 def backup_config_dir() -> Optional[Path]:
@@ -1333,7 +1389,7 @@ def main() -> None:
     mode.add_argument(
         "--add-webcam",
         action="store_true",
-        help="register the Front webcam with Moonraker, then exit",
+        help="serve the toolhead camera and register both webcams with Moonraker, then exit",
     )
     mode.add_argument(
         "--probe",
