@@ -305,6 +305,22 @@ class PRTouchFlowMixin:
             return None
         return path
 
+    @classmethod
+    def phase_levels(cls, rows, schedule):
+        """Steady level of each phase relative to the idle baseline."""
+        good = [r for r in rows if len(r) < 6 or r[5]]
+        if not schedule:
+            return None, []
+        idle, _ = cls._stats([r[1] for r in good if r[4] < schedule[0][0]])
+        if idle is None:
+            return None, []
+        levels = []
+        for start, end, rate in schedule:
+            cut = end - (end - start) * STEADY_FRACTION
+            mean, _ = cls._stats([r[1] for r in good if cut <= r[4] < end])
+            levels.append((rate, None if mean is None else mean - idle))
+        return idle, levels
+
     @staticmethod
     def cadence_fraction(rows, sps):
         """Share of sample-to-sample gaps within 30% of 1/sps.
@@ -432,6 +448,11 @@ class PRTouchFlowMixin:
                        '-' if t50 is None else '%.0fms' % (t50 * 1000.),
                        '-' if t90 is None else '%.0fms' % (t90 * 1000.),
                        avg('overshoot') * 100., len(group)))
+            idle, levels = self.phase_levels(rows, schedule)
+            if levels:
+                lines.append("Levels above idle: " + "  ".join(
+                    "%g:%s" % (rate, '-' if lvl is None else '%+.0f' % lvl)
+                    for rate, lvl in levels))
             noise = [m['noise'] for m in metrics if m['noise']]
             if metrics and noise:
                 step = sum(abs(m['step']) for m in metrics) / len(metrics)
